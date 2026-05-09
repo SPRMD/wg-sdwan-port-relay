@@ -355,17 +355,17 @@ validate_runtime_limits() {
 }
 
 ask() {
-  local var="$1" prompt="$2" default_value="${3:-}" input=""
-  read -rp "${prompt}${default_value:+ [$default_value]}: " input
-  printf -v "$var" '%s' "${input:-$default_value}"
+  local var="$1" prompt="$2" default_value="${3:-}" __wg_sdw_reply=""
+  read -rp "${prompt}${default_value:+ [$default_value]}: " __wg_sdw_reply
+  printf -v "$var" '%s' "${__wg_sdw_reply:-$default_value}"
 }
 
 ask_required() {
-  local var="$1" prompt="$2" input=""
+  local var="$1" prompt="$2" __wg_sdw_reply=""
   while true; do
-    read -rp "${prompt}: " input
-    if [ -n "$input" ]; then
-      printf -v "$var" '%s' "$input"
+    read -rp "${prompt}: " __wg_sdw_reply
+    if [ -n "$__wg_sdw_reply" ]; then
+      printf -v "$var" '%s' "$__wg_sdw_reply"
       return 0
     fi
     echo "Value cannot be empty."
@@ -373,11 +373,12 @@ ask_required() {
 }
 
 ask_port() {
-  local var="$1" prompt="$2" default_value="$3" input=""
+  local var="$1" prompt="$2" default_value="$3" __wg_sdw_reply=""
   while true; do
-    ask input "$prompt" "$default_value"
-    if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le 65535 ]; then
-      printf -v "$var" '%s' "$input"
+    read -rp "${prompt}${default_value:+ [$default_value]}: " __wg_sdw_reply
+    __wg_sdw_reply="${__wg_sdw_reply:-$default_value}"
+    if [[ "$__wg_sdw_reply" =~ ^[0-9]+$ ]] && [ "$__wg_sdw_reply" -ge 1 ] && [ "$__wg_sdw_reply" -le 65535 ]; then
+      printf -v "$var" '%s' "$__wg_sdw_reply"
       return 0
     fi
     echo "Port must be an integer between 1 and 65535."
