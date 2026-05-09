@@ -79,14 +79,7 @@ The script must be run as root.
 Download or copy the script to both the entry node and relay node:
 
 ```bash
-sudo install -m 700 wg-sdwan-port-relay.sh /root/wg-sdwan-port-relay.sh
-```
-
-Or:
-
-```bash
-chmod +x wg-sdwan-port-relay.sh
-sudo mv wg-sdwan-port-relay.sh /root/wg-sdwan-port-relay.sh
+wget -O wg-sdwan-port-relay.sh https://raw.githubusercontent.com/SPRMD/wg-port-forward-duct-tape/main/wg-sdwan-port-relay.sh && chmod +x wg-sdwan-port-relay.sh
 ```
 
 ## Roles
