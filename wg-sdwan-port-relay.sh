@@ -24,9 +24,6 @@ FORWARDS="${CONF_DIR}/forwards.csv"
 WG_CONF="/etc/wireguard/${WG_IF}.conf"
 RELAY_BIN="/usr/local/bin/wg-sdwan-port-relay.py"
 RELAY_SERVICE="/etc/systemd/system/wg-sdwan-port-relay.service"
-STATE_DIR="/var/lib/wg-sdwan-port-relay"
-BACKUP_DIR="/var/backups/wg-sdwan-port-relay"
-MANIFEST="${STATE_DIR}/manifest.tsv"
 CONFIG_ENV="${CONF_DIR}/config.env"
 IPT_COMMENT="wg-sdwan-port-relay"
 
@@ -49,94 +46,7 @@ load_config() {
   refresh_wg_conf
 }
 
-state_init() {
-  mkdir -p "$STATE_DIR" "$BACKUP_DIR"
-  chmod 700 "$STATE_DIR" "$BACKUP_DIR"
-  touch "$MANIFEST"
-  chmod 600 "$MANIFEST"
-}
-
-manifest_seen() {
-  [ -f "$MANIFEST" ] && awk -F '\t' -v k="$1" -v v="$2" '
-    $1 == k && $2 == v { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "$MANIFEST"
-}
-
-backup_path() {
-  local path="$1" hash="" dest=""
-  state_init
-
-  manifest_seen RESTORE "$path" && return 0
-  manifest_seen DELETE "$path" && return 0
-
-  if [ -e "$path" ] || [ -L "$path" ]; then
-    hash="$(printf '%s' "$path" | sha256sum | awk '{print $1}')"
-    dest="${BACKUP_DIR}/${hash}"
-    rm -rf "$dest"
-    cp -a "$path" "$dest"
-    printf 'RESTORE\t%s\t%s\n' "$path" "$dest" >> "$MANIFEST"
-  else
-    printf 'DELETE\t%s\t-\n' "$path" >> "$MANIFEST"
-  fi
-}
-
-meta_once() {
-  local key="$1" value="$2"
-  state_init
-  awk -F '\t' -v key="$key" '
-    $1 == "META" && $2 == key { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "$MANIFEST" && return 0
-  printf 'META\t%s\t%s\n' "$key" "$value" >> "$MANIFEST"
-}
-
-meta_get() {
-  local key="$1" default_value="${2:-}"
-  if [ ! -f "$MANIFEST" ]; then
-    echo "$default_value"
-    return 0
-  fi
-  awk -F '\t' -v key="$key" -v default_value="$default_value" '
-    $1 == "META" && $2 == key { print $3; found = 1; exit }
-    END { if (!found) print default_value }
-  ' "$MANIFEST"
-}
-
-record_unit() {
-  local unit="$1"
-  meta_once "UNIT_${unit}_ENABLED" "$(systemctl is-enabled "$unit" 2>/dev/null || true)"
-  meta_once "UNIT_${unit}_ACTIVE" "$(systemctl is-active "$unit" 2>/dev/null || true)"
-}
-
-restore_unit() {
-  local unit="$1" enabled_state="" active_state=""
-  enabled_state="$(meta_get "UNIT_${unit}_ENABLED" unknown)"
-  active_state="$(meta_get "UNIT_${unit}_ACTIVE" unknown)"
-
-  if [ "$enabled_state" = "enabled" ]; then
-    systemctl enable "$unit" >/dev/null 2>&1 || true
-  else
-    systemctl disable "$unit" >/dev/null 2>&1 || true
-  fi
-
-  if [ "$active_state" = "active" ]; then
-    systemctl start "$unit" >/dev/null 2>&1 || true
-  else
-    systemctl stop "$unit" >/dev/null 2>&1 || true
-  fi
-}
-
-record_runtime() {
-  local wg_if="$1" net="$2"
-  meta_once WG_IF "$wg_if"
-  meta_once WG_NET_V4 "$net"
-  meta_once SYSCTL_NET_IPV4_IP_FORWARD "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
-}
-
 ensure_dirs() {
-  state_init
-  backup_path "$CONF_DIR"
   mkdir -p "$CONF_DIR" "$KEY_DIR" /etc/wireguard
   chmod 700 "$KEY_DIR"
   touch "$FORWARDS"
@@ -144,7 +54,6 @@ ensure_dirs() {
 
 save_config() {
   ensure_dirs
-  backup_path "$CONFIG_ENV"
   cat > "$CONFIG_ENV" <<EOF
 WG_IF=$(printf '%q' "$WG_IF")
 WG_NET_V4=$(printf '%q' "$WG_NET_V4")
@@ -196,7 +105,7 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 missing_deps() {
   local missing=0
-  for cmd in wg ip iptables python3 systemctl sha256sum awk; do
+  for cmd in wg ip iptables python3 systemctl awk; do
     if ! have_cmd "$cmd"; then
       echo "missing: $cmd"
       missing=1
@@ -237,11 +146,7 @@ cmd_install_deps() {
   need_root
   echo "This will install system packages required by wg-sdwan-port-relay."
   echo "No configuration will be changed by this command."
-  read -rp "Type YES to continue: " confirm
-  if [ "$confirm" != "YES" ]; then
-    echo "Cancelled."
-    exit 0
-  fi
+  confirm_or_exit "Type YES to continue"
 
   if have_cmd apt-get; then
     apt-get update
@@ -442,6 +347,72 @@ ask_port() {
   done
 }
 
+run_validator() {
+  local value="$1" validator="$2" err=""
+  shift 2
+  if err="$($validator "$value" "$@" 2>&1)"; then
+    return 0
+  fi
+  [ -n "$err" ] && echo "$err" >&2
+  return 1
+}
+
+ask_validated() {
+  local var="$1" prompt="$2" default_value="$3" validator="$4" input=""
+  shift 4
+  while true; do
+    ask input "$prompt" "$default_value"
+    if run_validator "$input" "$validator" "$@"; then
+      printf -v "$var" '%s' "$input"
+      return 0
+    fi
+  done
+}
+
+ask_required_validated() {
+  local var="$1" prompt="$2" validator="$3" input=""
+  shift 3
+  while true; do
+    ask_required input "$prompt"
+    if run_validator "$input" "$validator" "$@"; then
+      printf -v "$var" '%s' "$input"
+      return 0
+    fi
+  done
+}
+
+ask_optional_psk() {
+  local var="$1" prompt="$2" default_value="$3" input=""
+  while true; do
+    ask input "$prompt" "$default_value"
+    if [ -z "$input" ] || run_validator "$input" validate_wg_psk "WireGuard preshared key"; then
+      printf -v "$var" '%s' "$input"
+      return 0
+    fi
+  done
+}
+
+ask_proto() {
+  local var="$1" prompt="$2" default_value="$3" input=""
+  while true; do
+    ask input "$prompt" "$default_value"
+    if run_validator "$input" validate_proto; then
+      printf -v "$var" '%s' "$input"
+      return 0
+    fi
+  done
+}
+
+confirm_or_exit() {
+  local prompt="${1:-Type YES to continue}"
+  local confirm=""
+  read -rp "${prompt}: " confirm
+  if [ "$confirm" != "YES" ]; then
+    echo "Cancelled."
+    exit 0
+  fi
+}
+
 endpoint() {
   local host="$1" port="$2"
   if [[ "$host" == \[*\] ]]; then
@@ -456,8 +427,6 @@ endpoint() {
 install_relay() {
   validate_iface "$WG_IF"
   validate_runtime_limits
-  backup_path "$RELAY_BIN"
-
   cat > "$RELAY_BIN" <<'PY'
 #!/usr/bin/env python3
 import csv
@@ -792,9 +761,6 @@ PY
 
   chmod +x "$RELAY_BIN"
 
-  backup_path "$RELAY_SERVICE"
-  record_unit wg-sdwan-port-relay.service
-
   cat > "$RELAY_SERVICE" <<EOF
 [Unit]
 Description=IPv6 TCP/UDP relay over WireGuard
@@ -882,13 +848,13 @@ cmd_init_relay() {
   if [ -t 0 ]; then
     echo
     echo "=== Relay node initialization ==="
-    ask wg_if "WireGuard interface name" "$wg_if"
+    ask_validated wg_if "WireGuard interface name" "$wg_if" validate_iface
     ask_port listen_port "WireGuard UDP listen port" "$listen_port"
-    ask relay_ip_cidr "Relay node WireGuard address CIDR" "$relay_ip_cidr"
-    ask entry_ip "Entry node WireGuard IP without CIDR" "$entry_ip"
-    ask wg_net "WireGuard IPv4 subnet for NAT" "$wg_net"
-    [ -n "$entry_pub" ] || ask_required entry_pub "Entry node WireGuard public key"
-    ask psk "WireGuard preshared key, optional" "$psk"
+    ask_validated relay_ip_cidr "Relay node WireGuard address CIDR" "$relay_ip_cidr" validate_cidr "relay WireGuard address CIDR"
+    ask_validated entry_ip "Entry node WireGuard IP without CIDR" "$entry_ip" validate_ip "entry WireGuard IP"
+    ask_validated wg_net "WireGuard IPv4 subnet for NAT" "$wg_net" validate_ipv4_cidr "WireGuard IPv4 subnet"
+    [ -n "$entry_pub" ] || ask_required_validated entry_pub "Entry node WireGuard public key" validate_wg_pubkey "entry public key"
+    ask_optional_psk psk "WireGuard preshared key, optional" "$psk"
   elif [ -z "$entry_pub" ]; then
     echo "Missing --entry-pub" >&2
     exit 1
@@ -912,10 +878,6 @@ cmd_init_relay() {
   refresh_wg_conf
 
   save_config
-  backup_path "$WG_CONF"
-  record_runtime "$WG_IF" "$WG_NET_V4"
-  record_unit "wg-quick@${WG_IF}.service"
-
   cat > "$WG_CONF" <<EOF
 [Interface]
 Address = ${RELAY_WG_IP_CIDR}
@@ -976,13 +938,13 @@ cmd_init_entry() {
   if [ -t 0 ]; then
     echo
     echo "=== Entry node initialization ==="
-    ask wg_if "WireGuard interface name" "$wg_if"
-    ask entry_ip_cidr "Entry node WireGuard address CIDR" "$entry_ip_cidr"
-    [ -n "$relay_host" ] || ask_required relay_host "Relay node address or DDNS hostname"
+    ask_validated wg_if "WireGuard interface name" "$wg_if" validate_iface
+    ask_validated entry_ip_cidr "Entry node WireGuard address CIDR" "$entry_ip_cidr" validate_cidr "entry WireGuard address CIDR"
+    [ -n "$relay_host" ] || ask_required_validated relay_host "Relay node address or DDNS hostname" validate_host
     ask_port relay_port "Relay WireGuard UDP port" "$relay_port"
-    [ -n "$relay_pub" ] || ask_required relay_pub "Relay node WireGuard public key"
-    ask psk "WireGuard preshared key, optional" "$psk"
-    ask allowed_ips "AllowedIPs, default is usually recommended" "$allowed_ips"
+    [ -n "$relay_pub" ] || ask_required_validated relay_pub "Relay node WireGuard public key" validate_wg_pubkey "relay public key"
+    ask_optional_psk psk "WireGuard preshared key, optional" "$psk"
+    ask_validated allowed_ips "AllowedIPs, default is usually recommended" "$allowed_ips" validate_allowed_ips
   elif [ -z "$relay_host" ] || [ -z "$relay_pub" ]; then
     echo "Missing --relay-host or --relay-pub" >&2
     exit 1
@@ -1005,10 +967,6 @@ cmd_init_entry() {
 
   save_config
   install_relay
-  backup_path "$WG_CONF"
-  record_runtime "$WG_IF" "$WG_NET_V4"
-  record_unit "wg-quick@${WG_IF}.service"
-
   cat > "$WG_CONF" <<EOF
 [Interface]
 Address = ${ENTRY_WG_IP_CIDR}
@@ -1064,6 +1022,14 @@ cmd_add_target() {
     target_host="$2"
     target_port="$3"
     listen_port="$4"
+  elif [ $# -eq 0 ] && [ -t 0 ]; then
+    echo
+    echo "=== Add forwarding target ==="
+    ask_required_validated name "Target name" validate_target_name
+    ask_proto proto "Protocol" "$proto"
+    ask_required_validated target_host "Target host or IPv4" validate_host
+    ask_port target_port "Target port" "54677"
+    ask_port listen_port "Entry listen port" "$target_port"
   else
     echo "Usage: bash $0 add-target [--proto tcp|udp|both] <name> <target-host-or-ipv4> <target-port> <entry-listen-port>" >&2
     echo "   or: bash $0 add-target <name> <tcp|udp|both> <target-host-or-ipv4> <target-port> <entry-listen-port>" >&2
@@ -1157,12 +1123,15 @@ cmd_status() {
 
 cmd_rollback() {
   need_root
-  local yes=0 force=0 wg_if="$WG_IF" net="$WG_NET_V4" old_ip_forward=""
+  local yes=0 wg_if="$WG_IF" net="$WG_NET_V4"
+
+  load_config
+  wg_if="$WG_IF"
+  net="$WG_NET_V4"
 
   while [ $# -gt 0 ]; do
     case "$1" in
       -y|--yes) yes=1; shift;;
-      --force-clean) force=1; shift;;
       --wg-if) wg_if="$2"; shift 2;;
       --wg-net-v4) net="$2"; shift 2;;
       *) echo "Unknown argument: $1" >&2; exit 1;;
@@ -1172,28 +1141,18 @@ cmd_rollback() {
   validate_iface "$wg_if"
   validate_ipv4_cidr "$net" "WireGuard IPv4 subnet"
 
-  if [ -s "$MANIFEST" ]; then
-    wg_if="$(meta_get WG_IF "$wg_if")"
-    net="$(meta_get WG_NET_V4 "$net")"
-  elif [ "$force" -ne 1 ]; then
-    echo "No rollback manifest found: $MANIFEST" >&2
-    echo "For old installations without backup manifest, use:" >&2
-    echo "  sudo bash $0 rollback --force-clean" >&2
-    exit 1
-  fi
-
   echo
-  echo "Rollback will be performed on this machine:"
-  echo "  WG_IF=${wg_if}"
-  echo "  WG_NET_V4=${net}"
+  echo "Rollback will remove this installation from this machine:"
+  echo "  WireGuard interface: ${wg_if}"
+  echo "  WireGuard config: /etc/wireguard/${wg_if}.conf"
+  echo "  Relay config dir: ${CONF_DIR}"
+  echo "  Relay service: ${RELAY_SERVICE}"
+  echo "  Relay binary: ${RELAY_BIN}"
+  echo "  NAT source subnet: ${net}"
   echo
 
   if [ "$yes" -ne 1 ]; then
-    read -rp "Type YES to continue: " confirm
-    if [ "$confirm" != "YES" ]; then
-      echo "Cancelled."
-      exit 0
-    fi
+    confirm_or_exit "Type YES to continue"
   fi
 
   systemctl disable --now wg-sdwan-port-relay.service >/dev/null 2>&1 || true
@@ -1201,42 +1160,12 @@ cmd_rollback() {
   wg-quick down "$wg_if" >/dev/null 2>&1 || true
   ip link del "$wg_if" >/dev/null 2>&1 || true
 
-  if [ -s "$MANIFEST" ]; then
-    while iptables -t nat -D POSTROUTING -s "$net" -m comment --comment "$IPT_COMMENT" -j MASQUERADE >/dev/null 2>&1; do :; done
-    old_ip_forward="$(meta_get SYSCTL_NET_IPV4_IP_FORWARD unknown)"
-    if [ "$old_ip_forward" != "unknown" ]; then
-      sysctl -w "net.ipv4.ip_forward=${old_ip_forward}" >/dev/null 2>&1 || true
-    fi
-    tac "$MANIFEST" | while IFS=$'\t' read -r action path backup; do
-      case "$action" in
-        RESTORE)
-          rm -rf "$path"
-          mkdir -p "$(dirname "$path")"
-          cp -a "$backup" "$path"
-          echo "Restored: $path"
-          ;;
-        DELETE)
-          rm -rf "$path"
-          echo "Deleted: $path"
-          ;;
-      esac
-    done
-  fi
+  while iptables -t nat -D POSTROUTING -s "$net" -m comment --comment "$IPT_COMMENT" -j MASQUERADE >/dev/null 2>&1; do :; done
 
-  if [ "$force" -eq 1 ]; then
-    rm -f "$RELAY_BIN" "$RELAY_SERVICE" "/etc/wireguard/${wg_if}.conf"
-    rm -rf "$CONF_DIR"
-    while iptables -t nat -D POSTROUTING -s "$net" -m comment --comment "$IPT_COMMENT" -j MASQUERADE >/dev/null 2>&1; do :; done
-  fi
+  rm -f "$RELAY_BIN" "$RELAY_SERVICE" "/etc/wireguard/${wg_if}.conf"
+  rm -rf "$CONF_DIR" /var/lib/wg-sdwan-port-relay /var/backups/wg-sdwan-port-relay
 
   systemctl daemon-reload >/dev/null 2>&1 || true
-
-  if [ -s "$MANIFEST" ]; then
-    restore_unit wg-sdwan-port-relay.service
-    restore_unit "wg-quick@${wg_if}.service"
-  fi
-
-  rm -rf "$STATE_DIR" "$BACKUP_DIR"
   echo "Rollback completed."
 }
 
@@ -1251,6 +1180,7 @@ Usage:
   bash $0 init-relay
   bash $0 init-entry
 
+  bash $0 add-target       # interactive
   bash $0 add-target target1 203.0.113.10 54677 54677
   bash $0 add-target --proto tcp target2 exit.example.com 54677 54678
   bash $0 add-target target3 udp exit.example.com 54677 54679
@@ -1259,7 +1189,6 @@ Usage:
   bash $0 status
 
   bash $0 rollback
-  bash $0 rollback --force-clean
 
 Non-interactive examples:
   bash $0 init-relay \\
