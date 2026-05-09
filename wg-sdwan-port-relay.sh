@@ -32,7 +32,7 @@ IPT_COMMENT="wg-sdwan-port-relay"
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
-    echo "请使用 root 权限运行，例如：sudo bash $0 ..." >&2
+    echo "Please run as root, for example: sudo bash $0 ..." >&2
     exit 1
   fi
 }
@@ -172,7 +172,7 @@ missing_deps() {
   local missing=0
   for cmd in wg ip iptables python3 systemctl sha256sum awk; do
     if ! have_cmd "$cmd"; then
-      echo "缺少依赖命令: $cmd"
+      echo "missing: $cmd"
       missing=1
     fi
   done
@@ -181,11 +181,11 @@ missing_deps() {
 
 require_deps() {
   if ! missing_deps >/tmp/wg_sdw_relay_missing.$$; then
-    echo "缺少以下依赖：" >&2
+    echo "Missing dependencies:" >&2
     cat /tmp/wg_sdw_relay_missing.$$ >&2
     rm -f /tmp/wg_sdw_relay_missing.$$
     echo >&2
-    echo "请手动安装依赖，或运行：" >&2
+    echo "Install dependencies manually or run:" >&2
     echo "  sudo bash $0 install-deps" >&2
     exit 1
   fi
@@ -195,19 +195,19 @@ require_deps() {
 cmd_check() {
   if missing_deps; then
     echo
-    echo "检测到依赖缺失。请运行：sudo bash $0 install-deps"
+    echo "Some dependencies are missing. Run: sudo bash $0 install-deps"
     exit 1
   fi
-  echo "所有必需依赖均已安装。"
+  echo "All required dependencies are present."
 }
 
 cmd_install_deps() {
   need_root
-  echo "即将安装 wg-sdwan-port-relay 所需的系统软件包。"
-  echo "此命令不会修改现有配置。"
-  read -rp "输入 YES 继续: " confirm
+  echo "This will install system packages required by wg-sdwan-port-relay."
+  echo "No configuration will be changed by this command."
+  read -rp "Type YES to continue: " confirm
   if [ "$confirm" != "YES" ]; then
-    echo "已取消。"
+    echo "Cancelled."
     exit 0
   fi
 
@@ -219,7 +219,7 @@ cmd_install_deps() {
   elif have_cmd yum; then
     yum install -y wireguard-tools iproute iptables python3 coreutils gawk
   else
-    echo "不支持当前包管理器。请手动安装：wireguard-tools, iproute2/iproute, iptables, python3, coreutils, awk" >&2
+    echo "Unsupported package manager. Please install: wireguard-tools, iproute2/iproute, iptables, python3, coreutils, awk" >&2
     exit 1
   fi
 }
@@ -227,7 +227,7 @@ cmd_install_deps() {
 validate_port() {
   local p="$1" label="${2:-port}"
   if ! [[ "$p" =~ ^[0-9]+$ ]] || [ "$p" -lt 1 ] || [ "$p" -gt 65535 ]; then
-    echo "无效的 ${label}：必须是 1 到 65535 之间的整数" >&2
+    echo "Invalid ${label}: must be an integer between 1 and 65535" >&2
     exit 1
   fi
 }
@@ -235,7 +235,7 @@ validate_port() {
 validate_int_range() {
   local value="$1" label="$2" min="$3" max="$4"
   if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt "$min" ] || [ "$value" -gt "$max" ]; then
-    echo "无效的 ${label}：必须是 ${min} 到 ${max} 之间的整数" >&2
+    echo "Invalid ${label}: must be an integer between ${min} and ${max}" >&2
     exit 1
   fi
 }
@@ -243,8 +243,8 @@ validate_int_range() {
 validate_iface() {
   local name="$1"
   if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$ ]]; then
-    echo "无效的网卡接口名称：${name}" >&2
-    echo "接口名需为 1-15 个字符：字母、数字、点、下划线、短横线；必须以字母或数字开头。" >&2
+    echo "Invalid interface name: ${name}" >&2
+    echo "Use 1-15 chars: letters, numbers, dot, underscore, hyphen; must start with letter or number." >&2
     exit 1
   fi
 }
@@ -252,7 +252,7 @@ validate_iface() {
 validate_target_name() {
   local name="$1"
   if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
-    echo "无效的目标名称：${name}" >&2
+    echo "Invalid target name: ${name}" >&2
     exit 1
   fi
 }
@@ -350,38 +350,37 @@ validate_runtime_limits() {
   validate_int_range "$TCP_IDLE_TIMEOUT" TCP_IDLE_TIMEOUT 1 86400
   validate_int_range "$UDP_IDLE_TIMEOUT" UDP_IDLE_TIMEOUT 1 86400
   validate_int_range "$CONNECT_TIMEOUT" CONNECT_TIMEOUT 1 3600
-  case "$LOG_LEVEL" in debug|info|warning|error) :;; *) echo "无效的 LOG_LEVEL：${LOG_LEVEL}，可用值：debug/info/warning/error" >&2; exit 1;; esac
-  case "$TARGET_FAMILY" in ipv4|any) :;; *) echo "无效的 TARGET_FAMILY：${TARGET_FAMILY}，可用值：ipv4/any" >&2; exit 1;; esac
+  case "$LOG_LEVEL" in debug|info|warning|error) :;; *) echo "Invalid LOG_LEVEL: ${LOG_LEVEL}" >&2; exit 1;; esac
+  case "$TARGET_FAMILY" in ipv4|any) :;; *) echo "Invalid TARGET_FAMILY: ${TARGET_FAMILY}" >&2; exit 1;; esac
 }
 
 ask() {
-  local var="$1" prompt="$2" default_value="${3:-}" __wg_sdw_reply=""
-  read -rp "${prompt}${default_value:+ [$default_value]}: " __wg_sdw_reply
-  printf -v "$var" '%s' "${__wg_sdw_reply:-$default_value}"
+  local var="$1" prompt="$2" default_value="${3:-}" input=""
+  read -rp "${prompt}${default_value:+ [$default_value]}: " input
+  printf -v "$var" '%s' "${input:-$default_value}"
 }
 
 ask_required() {
-  local var="$1" prompt="$2" __wg_sdw_reply=""
+  local var="$1" prompt="$2" input=""
   while true; do
-    read -rp "${prompt}: " __wg_sdw_reply
-    if [ -n "$__wg_sdw_reply" ]; then
-      printf -v "$var" '%s' "$__wg_sdw_reply"
+    read -rp "${prompt}: " input
+    if [ -n "$input" ]; then
+      printf -v "$var" '%s' "$input"
       return 0
     fi
-    echo "该项不能为空。"
+    echo "Value cannot be empty."
   done
 }
 
 ask_port() {
-  local var="$1" prompt="$2" default_value="$3" __wg_sdw_reply=""
+  local var="$1" prompt="$2" default_value="$3" input=""
   while true; do
-    read -rp "${prompt}${default_value:+ [$default_value]}: " __wg_sdw_reply
-    __wg_sdw_reply="${__wg_sdw_reply:-$default_value}"
-    if [[ "$__wg_sdw_reply" =~ ^[0-9]+$ ]] && [ "$__wg_sdw_reply" -ge 1 ] && [ "$__wg_sdw_reply" -le 65535 ]; then
-      printf -v "$var" '%s' "$__wg_sdw_reply"
+    ask input "$prompt" "$default_value"
+    if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le 65535 ]; then
+      printf -v "$var" '%s' "$input"
       return 0
     fi
-    echo "端口必须是 1 到 65535 之间的整数。"
+    echo "Port must be an integer between 1 and 65535."
   done
 }
 
@@ -755,7 +754,7 @@ cmd_keygen() {
   require_deps
   ensure_key
   echo
-  echo "WireGuard 公钥："
+  echo "WireGuard public key:"
   cat "${KEY_DIR}/publickey"
   echo
 }
@@ -778,30 +777,30 @@ cmd_init_relay() {
       --max-tcp-connections) MAX_TCP_CONNECTIONS="$2"; shift 2;;
       --max-udp-clients) MAX_UDP_CLIENTS="$2"; shift 2;;
       --log-level) LOG_LEVEL="$2"; shift 2;;
-      *) echo "未知参数：$1" >&2; exit 1;;
+      *) echo "Unknown argument: $1" >&2; exit 1;;
     esac
   done
 
   if [ -t 0 ]; then
     echo
-    echo "=== 中继节点初始化 ==="
-    ask wg_if "WireGuard 接口名称" "$wg_if"
-    ask_port listen_port "WireGuard UDP 监听端口" "$listen_port"
-    ask relay_ip_cidr "中继节点 WireGuard 地址 CIDR" "$relay_ip_cidr"
-    ask entry_ip "入口节点 WireGuard IP（不含 CIDR）" "$entry_ip"
-    ask wg_net "用于 NAT 的 WireGuard IPv4 子网" "$wg_net"
-    [ -n "$entry_pub" ] || ask_required entry_pub "入口节点 WireGuard 公钥"
+    echo "=== Relay node initialization ==="
+    ask wg_if "WireGuard interface name" "$wg_if"
+    ask_port listen_port "WireGuard UDP listen port" "$listen_port"
+    ask relay_ip_cidr "Relay node WireGuard address CIDR" "$relay_ip_cidr"
+    ask entry_ip "Entry node WireGuard IP without CIDR" "$entry_ip"
+    ask wg_net "WireGuard IPv4 subnet for NAT" "$wg_net"
+    [ -n "$entry_pub" ] || ask_required entry_pub "Entry node WireGuard public key"
   elif [ -z "$entry_pub" ]; then
-    echo "缺少参数 --entry-pub" >&2
+    echo "Missing --entry-pub" >&2
     exit 1
   fi
 
   validate_iface "$wg_if"
-  validate_port "$listen_port" "监听端口"
-  validate_cidr "$relay_ip_cidr" "中继 WireGuard 地址 CIDR"
-  validate_ip "$entry_ip" "入口 WireGuard IP"
-  validate_ipv4_cidr "$wg_net" "WireGuard IPv4 子网"
-  validate_wg_pubkey "$entry_pub" "入口节点公钥"
+  validate_port "$listen_port" "listen port"
+  validate_cidr "$relay_ip_cidr" "relay WireGuard address CIDR"
+  validate_ip "$entry_ip" "entry WireGuard IP"
+  validate_ipv4_cidr "$wg_net" "WireGuard IPv4 subnet"
+  validate_wg_pubkey "$entry_pub" "entry public key"
   validate_runtime_limits
 
   WG_IF="$wg_if"
@@ -835,8 +834,8 @@ EOF
   systemctl restart "wg-quick@${WG_IF}"
 
   echo
-  echo "中继节点 WireGuard 已启动：${WG_IF} UDP/${WG_PORT}"
-  echo "中继节点公钥："
+  echo "Relay WireGuard started: ${WG_IF} UDP/${WG_PORT}"
+  echo "Relay public key:"
   cat "${KEY_DIR}/publickey"
   echo
 }
@@ -863,29 +862,29 @@ cmd_init_entry() {
       --connect-timeout) CONNECT_TIMEOUT="$2"; shift 2;;
       --log-level) LOG_LEVEL="$2"; shift 2;;
       --target-family) TARGET_FAMILY="$2"; shift 2;;
-      *) echo "未知参数：$1" >&2; exit 1;;
+      *) echo "Unknown argument: $1" >&2; exit 1;;
     esac
   done
 
   if [ -t 0 ]; then
     echo
-    echo "=== 入口节点初始化 ==="
-    ask wg_if "WireGuard 接口名称" "$wg_if"
-    ask entry_ip_cidr "入口节点 WireGuard 地址 CIDR" "$entry_ip_cidr"
-    [ -n "$relay_host" ] || ask_required relay_host "中继节点地址或 DDNS 域名"
-    ask_port relay_port "中继 WireGuard UDP 端口" "$relay_port"
-    [ -n "$relay_pub" ] || ask_required relay_pub "中继节点 WireGuard 公钥"
-    ask allowed_ips "AllowedIPs，通常建议使用默认值" "$allowed_ips"
+    echo "=== Entry node initialization ==="
+    ask wg_if "WireGuard interface name" "$wg_if"
+    ask entry_ip_cidr "Entry node WireGuard address CIDR" "$entry_ip_cidr"
+    [ -n "$relay_host" ] || ask_required relay_host "Relay node address or DDNS hostname"
+    ask_port relay_port "Relay WireGuard UDP port" "$relay_port"
+    [ -n "$relay_pub" ] || ask_required relay_pub "Relay node WireGuard public key"
+    ask allowed_ips "AllowedIPs, default is usually recommended" "$allowed_ips"
   elif [ -z "$relay_host" ] || [ -z "$relay_pub" ]; then
-    echo "缺少参数 --relay-host 或 --relay-pub" >&2
+    echo "Missing --relay-host or --relay-pub" >&2
     exit 1
   fi
 
   validate_iface "$wg_if"
   validate_host "$relay_host"
-  validate_port "$relay_port" "中继端口"
-  validate_cidr "$entry_ip_cidr" "入口 WireGuard 地址 CIDR"
-  validate_wg_pubkey "$relay_pub" "中继节点公钥"
+  validate_port "$relay_port" "relay port"
+  validate_cidr "$entry_ip_cidr" "entry WireGuard address CIDR"
+  validate_wg_pubkey "$relay_pub" "relay public key"
   validate_allowed_ips "$allowed_ips"
   validate_runtime_limits
 
@@ -918,8 +917,8 @@ EOF
   systemctl restart "wg-quick@${WG_IF}"
 
   echo
-  echo "入口节点 WireGuard 已启动：${WG_IF} -> $(endpoint "$relay_host" "$relay_port")"
-  echo "入口节点公钥："
+  echo "Entry WireGuard started: ${WG_IF} -> $(endpoint "$relay_host" "$relay_port")"
+  echo "Entry public key:"
   cat "${KEY_DIR}/publickey"
   echo
 }
@@ -933,9 +932,9 @@ cmd_add_target() {
   install_relay
 
   [ $# -eq 4 ] || {
-    echo "用法：bash $0 add-target <名称> <目标主机或IPv4> <目标端口> <入口监听端口>" >&2
-    echo "示例：bash $0 add-target target1 203.0.113.10 54677 54677" >&2
-    echo "示例：bash $0 add-target target2 exit.example.com 54677 54678" >&2
+    echo "Usage: bash $0 add-target <name> <target-host-or-ipv4> <target-port> <entry-listen-port>" >&2
+    echo "Example: bash $0 add-target target1 203.0.113.10 54677 54677" >&2
+    echo "Example: bash $0 add-target target2 exit.example.com 54677 54678" >&2
     exit 1
   }
 
@@ -943,8 +942,8 @@ cmd_add_target() {
 
   validate_target_name "$name"
   validate_host "$target_host"
-  validate_port "$target_port" "目标端口"
-  validate_port "$listen_port" "监听端口"
+  validate_port "$target_port" "target port"
+  validate_port "$listen_port" "listen port"
 
   python3 - "$target_host" "$target_port" <<'PY'
 import socket, sys
@@ -954,8 +953,8 @@ try:
     socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
 except socket.gaierror as exc:
     print(
-        f"警告：无法解析 {host} 的 IPv4 A 记录：{exc}\n"
-        "配置仍会保存。中继服务会在新连接到来时再次尝试解析。",
+        f"Warning: cannot resolve IPv4 A record for {host}: {exc}\n"
+        "Config will still be saved. The relay will try resolving on new connections.",
         file=sys.stderr,
     )
 PY
@@ -969,10 +968,10 @@ PY
   systemctl restart wg-sdwan-port-relay.service
 
   echo
-  echo "已添加目标："
-  echo "  名称: ${name}"
-  echo "  监听: [::]:${listen_port}"
-  echo "  目标: ${target_host}:${target_port}"
+  echo "Added target:"
+  echo "  name: ${name}"
+  echo "  listen: [::]:${listen_port}"
+  echo "  target: ${target_host}:${target_port}"
   echo
 }
 
@@ -980,7 +979,7 @@ cmd_del_target() {
   need_root
   ensure_dirs
   load_config
-  [ $# -eq 1 ] || { echo "用法：bash $0 del-target <名称>" >&2; exit 1; }
+  [ $# -eq 1 ] || { echo "Usage: bash $0 del-target <name>" >&2; exit 1; }
   validate_target_name "$1"
 
   local tmp=""
@@ -988,17 +987,17 @@ cmd_del_target() {
   awk -F, -v name="$1" '$1 != name { print }' "$FORWARDS" > "$tmp"
   mv "$tmp" "$FORWARDS"
   systemctl restart wg-sdwan-port-relay.service >/dev/null 2>&1 || true
-  echo "已删除目标：$1"
+  echo "Deleted target: $1"
 }
 
 cmd_list() {
   ensure_dirs
   echo
-  echo "当前目标列表："
+  echo "Current targets:"
   if [ -s "$FORWARDS" ]; then
     column -s, -t "$FORWARDS" 2>/dev/null || cat "$FORWARDS"
   else
-    echo "无"
+    echo "None"
   fi
   echo
 }
@@ -1006,17 +1005,17 @@ cmd_list() {
 cmd_status() {
   load_config
   echo
-  echo "WireGuard 状态："
+  echo "WireGuard status:"
   wg show "$WG_IF" || true
   echo
-  echo "中继服务状态："
+  echo "Relay service status:"
   systemctl status wg-sdwan-port-relay.service --no-pager || true
   echo
-  echo "目标列表："
+  echo "Targets:"
   if [ -f "$FORWARDS" ]; then
     cat "$FORWARDS"
   else
-    echo "无：${FORWARDS}"
+    echo "None: ${FORWARDS}"
   fi
   echo
 }
@@ -1031,7 +1030,7 @@ cmd_rollback() {
       --force-clean) force=1; shift;;
       --wg-if) wg_if="$2"; shift 2;;
       --wg-net-v4) net="$2"; shift 2;;
-      *) echo "未知参数：$1" >&2; exit 1;;
+      *) echo "Unknown argument: $1" >&2; exit 1;;
     esac
   done
 
@@ -1042,22 +1041,22 @@ cmd_rollback() {
     wg_if="$(meta_get WG_IF "$wg_if")"
     net="$(meta_get WG_NET_V4 "$net")"
   elif [ "$force" -ne 1 ]; then
-    echo "未找到回滚清单：$MANIFEST" >&2
-    echo "如果是没有备份清单的旧安装，请使用：" >&2
+    echo "No rollback manifest found: $MANIFEST" >&2
+    echo "For old installations without backup manifest, use:" >&2
     echo "  sudo bash $0 rollback --force-clean" >&2
     exit 1
   fi
 
   echo
-  echo "将在本机执行回滚："
+  echo "Rollback will be performed on this machine:"
   echo "  WG_IF=${wg_if}"
   echo "  WG_NET_V4=${net}"
   echo
 
   if [ "$yes" -ne 1 ]; then
-    read -rp "输入 YES 继续: " confirm
+    read -rp "Type YES to continue: " confirm
     if [ "$confirm" != "YES" ]; then
-      echo "已取消。"
+      echo "Cancelled."
       exit 0
     fi
   fi
@@ -1079,11 +1078,11 @@ cmd_rollback() {
           rm -rf "$path"
           mkdir -p "$(dirname "$path")"
           cp -a "$backup" "$path"
-          echo "已恢复：$path"
+          echo "Restored: $path"
           ;;
         DELETE)
           rm -rf "$path"
-          echo "已删除：$path"
+          echo "Deleted: $path"
           ;;
       esac
     done
@@ -1103,31 +1102,31 @@ cmd_rollback() {
   fi
 
   rm -rf "$STATE_DIR" "$BACKUP_DIR"
-  echo "回滚完成。"
+  echo "Rollback completed."
 }
 
 usage() {
   cat <<EOF
-用法：
-  bash $0 check                 检查依赖是否安装
-  bash $0 install-deps          安装依赖
-  bash $0 keygen                生成/显示本机 WireGuard 公钥
+Usage:
+  bash $0 check
+  bash $0 install-deps
+  bash $0 keygen
 
-  bash $0 init-relay            初始化中继节点
-  bash $0 init-entry            初始化入口节点
+  bash $0 init-relay
+  bash $0 init-entry
 
   bash $0 add-target target1 203.0.113.10 54677 54677
   bash $0 add-target target2 exit.example.com 54677 54678
   bash $0 del-target target1
-  bash $0 list-targets          列出转发目标
-  bash $0 status                查看运行状态
+  bash $0 list-targets
+  bash $0 status
 
-  bash $0 rollback              按备份清单回滚
-  bash $0 rollback --force-clean 强制清理安装内容
+  bash $0 rollback
+  bash $0 rollback --force-clean
 
-非交互示例：
+Non-interactive examples:
   bash $0 init-relay \\
-    --entry-pub <入口节点公钥> \\
+    --entry-pub <ENTRY_PUBLIC_KEY> \\
     --listen-port 51820 \\
     --wg-if wg-sdwan \\
     --relay-wg-ip-cidr 10.233.233.1/24 \\
@@ -1136,22 +1135,22 @@ usage() {
 
   bash $0 init-entry \\
     --relay-host sdwan.example.com \\
-    --relay-pub <中继节点公钥> \\
+    --relay-pub <RELAY_PUBLIC_KEY> \\
     --relay-port 51820 \\
     --wg-if wg-sdwan \\
     --entry-wg-ip-cidr 10.233.233.2/24 \\
     --allowed-ips 0.0.0.0/0
 
-入口节点上的可选中继限制：
-  --max-tcp-connections 1024    最大 TCP 连接数
-  --max-udp-clients 4096        最大 UDP 客户端数
-  --tcp-idle-timeout 300        TCP 空闲超时秒数
-  --udp-idle-timeout 180        UDP 空闲超时秒数
-  --connect-timeout 15          连接超时秒数
-  --log-level info              日志级别：debug/info/warning/error
-  --target-family ipv4          目标地址族：ipv4/any
+Optional relay limits on entry node:
+  --max-tcp-connections 1024
+  --max-udp-clients 4096
+  --tcp-idle-timeout 300
+  --udp-idle-timeout 180
+  --connect-timeout 15
+  --log-level info
+  --target-family ipv4
 
-兼容别名：
+Compatibility aliases:
   init-sdwan      -> init-relay
   init-a          -> init-entry
   add-exit        -> add-target
