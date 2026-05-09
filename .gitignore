@@ -1,0 +1,16 @@
+# Runtime configs and generated secrets
+*.conf
+*.key
+privatekey
+publickey
+forwards.csv
+config.env
+manifest.tsv
+
+# Local runtime state
+wg-sdwan-port-relay/
+var/
+backups/
+
+# Logs
+*.log
